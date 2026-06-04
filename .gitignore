@@ -1,4 +1,5 @@
 node_modules/
 plugins/
+npm-debug.log*
 *.tgz
 .DS_Store
