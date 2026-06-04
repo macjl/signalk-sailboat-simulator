@@ -1,0 +1,14 @@
+services:
+  signalk-sandbox:
+    image: signalk/signalk-server:master-24.x
+    container_name: signalk-sailboat-sandbox
+    init: true
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    volumes:
+      - signalk-sailboat-sandbox-data:/home/node/.signalk
+      - .:/tmp/signalk-sailboat-simulator
+
+volumes:
+  signalk-sailboat-sandbox-data:
