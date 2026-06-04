@@ -96,34 +96,6 @@ Useful existing building blocks:
 - `advancedwind`: https://www.npmjs.com/package/advancedwind
 - `polar-recorder`: https://www.npmjs.com/package/polar-recorder
 
-## Sandbox
-
-A local Signal K sandbox is running from the `signalk/signalk-server:master-24.x` Docker image:
-
-- URL: http://localhost:3001/admin/
-- Login: `admin`
-- Password: `admin`
-- Container: `signalk-sailboat-sandbox`
-- Config volume: `signalk-sailboat-sandbox-data`
-- Local plugin mount: `/tmp/signalk-sailboat-simulator`
-
-Deploy the local development plugin inside the sandbox with:
-
-```sh
-docker exec -w /home/node/.signalk signalk-sailboat-sandbox npm install /tmp/signalk-sailboat-simulator
-docker restart signalk-sailboat-sandbox
-```
-
-Avoid bind-mounting this working directory directly into `/home/node/.signalk/node_modules`: npm renames packages during app store installs, and Docker bind mounts can make that fail with `EBUSY`.
-
-Useful commands:
-
-```sh
-docker ps
-docker logs --tail 100 signalk-sailboat-sandbox
-docker restart signalk-sailboat-sandbox
-```
-
 ## Development
 
 Run tests with:
