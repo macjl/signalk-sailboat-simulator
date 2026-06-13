@@ -31,7 +31,11 @@ Default input paths:
 - `environment.wind.speedTrue`: true wind speed in m/s
 - `environment.wind.directionTrue`: true wind direction in radians
 
-When Weather API reading is enabled, `environment.wind.speedTrue` and `environment.wind.directionTrue` are populated from `/signalk/v2/api/weather/observations` at the simulated position. The direct input paths remain as a fallback.
+When Weather API reading is enabled, `environment.wind.speedTrue` and `environment.wind.directionTrue` are populated from Signal K Weather API data at the simulated position. The simulator first tries observations, then falls back to the closest point forecast when no usable observation is available. The direct input paths are only used when Weather API reading is disabled, so the simulator does not fall back to wind values it published itself.
+
+By default the simulator uses the Signal K default weather provider. Set `weather.providerId` to a registered provider id, for example `open-meteo` or `signalk-grib-weather-provider`, to use that provider explicitly.
+
+When no usable weather data is available yet, for example while a GRIB provider is still indexing files during startup, the simulator retries with `weather.retryIntervalSeconds` instead of waiting for the normal polling interval.
 
 If `steering.autopilot.target.headingTrue` is missing, the simulator derives the true heading from the autopilot magnetic target:
 
@@ -64,7 +68,7 @@ The simulator does not instantly snap to the autopilot target heading. It turns 
 
 When `grounding.enabled` is true, the simulator reads `navigation.distanceToShore` and stops the virtual boat when the value is less than or equal to `grounding.minimumDistanceToShore`, which defaults to 20 meters. If `navigation.shore.bearingTrue` is available, the simulator still allows movement when the selected heading points away from the nearest shore.
 
-A first prototype provider lives in `plugins/signalk-distance-to-shore`. It uses precomputed coastline segments and publishes `navigation.distanceToShore`, `navigation.shore.closestPoint` and `navigation.shore.bearingTrue` for simulator experiments.
+The companion [`signalk-distance-to-shore`](https://github.com/macjl/signalk-distance-to-shore) plugin publishes `navigation.distanceToShore`, `navigation.shore.closestPoint` and `navigation.shore.bearingTrue` from a separately installed coastline chart.
 
 ## Persistence
 

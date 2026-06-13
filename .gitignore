@@ -1,5 +1,6 @@
 node_modules/
 plugins/
+plugin-config-data/
 npm-debug.log*
 *.tgz
 .DS_Store

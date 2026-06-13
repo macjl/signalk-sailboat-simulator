@@ -33,6 +33,8 @@ const DEFAULT_OPTIONS = {
   },
   weather: {
     enabled: true,
+    providerId: '',
+    retryIntervalSeconds: 30,
     pollIntervalSeconds: 600,
     maxAgeSeconds: 1800
   },
@@ -95,6 +97,9 @@ module.exports = function createPlugin (app) {
 
   function start (pluginOptions) {
     options = normalizeOptions(mergeOptions(DEFAULT_OPTIONS, pluginOptions || {}))
+    lastWeatherFetchAt = 0
+    lastStateSaveAt = 0
+    weatherSnapshot = null
     stateStore = createStateStore(app, PLUGIN_ID)
     state = createInitialState(options)
     if (options.persistence.enabled) {
@@ -151,6 +156,7 @@ module.exports = function createPlugin (app) {
 
   function readInputs () {
     const weatherWind = freshWeatherWind()
+    const inputPathFallbackEnabled = !options.weather.enabled
     return {
       autopilotMode: readString(options.inputs.autopilotModePath) || readString('steering.autopilot.state'),
       targetHeadingTrue: readNumber(options.inputs.targetHeadingTruePath),
@@ -163,10 +169,10 @@ module.exports = function createPlugin (app) {
       polarSpeed: readNumber(options.inputs.performanceSpeedPath),
       windSpeedTrue: weatherWind && weatherWind.speedTrue != null
         ? weatherWind.speedTrue
-        : readNumber(options.inputs.windSpeedTruePath),
+        : inputPathFallbackEnabled ? readNumber(options.inputs.windSpeedTruePath) : null,
       windDirectionTrue: weatherWind && weatherWind.directionTrue != null
         ? weatherWind.directionTrue
-        : readNumber(options.inputs.windDirectionTruePath),
+        : inputPathFallbackEnabled ? readNumber(options.inputs.windDirectionTruePath) : null,
       distanceToShore: readNumber(options.inputs.distanceToShorePath),
       shoreBearingTrue: readNumber(options.inputs.shoreBearingTruePath),
       windGust: weatherWind && weatherWind.gust != null ? weatherWind.gust : null,
@@ -272,30 +278,116 @@ module.exports = function createPlugin (app) {
 
   async function refreshWeather (now) {
     if (!options.weather.enabled) return
-    if (now - lastWeatherFetchAt < options.weather.pollIntervalSeconds * 1000) return
+    const intervalSeconds = freshWeatherWind()
+      ? options.weather.pollIntervalSeconds
+      : options.weather.retryIntervalSeconds
+    if (now - lastWeatherFetchAt < intervalSeconds * 1000) return
     lastWeatherFetchAt = now
 
     const position = state && state.position ? state.position : options.initialState
-    const observation = await fetchWeatherObservation(position)
-    const snapshot = windSnapshotFromObservation(observation)
-    if (snapshot) {
+    const weatherData = await fetchWeatherData(position, now)
+    if (weatherData) {
       weatherSnapshot = {
-        ...snapshot,
+        ...weatherData.snapshot,
+        type: weatherData.type,
+        providerId: weatherData.providerId,
         fetchedAt: now
       }
     }
   }
 
-  async function fetchWeatherObservation (position) {
-    if (!app.weatherApi || typeof app.weatherApi.getObservations !== 'function') return null
-    const observations = await app.weatherApi.getObservations(position, { maxCount: 1 })
-    return Array.isArray(observations) && observations.length > 0 ? observations[0] : null
+  async function fetchWeatherData (position, now) {
+    const provider = getWeatherProvider()
+    if (!provider) return null
+
+    const observation = await fetchWeatherObservation(provider, position)
+    const observationSnapshot = windSnapshotFromObservation(observation)
+    if (observationSnapshot) {
+      return {
+        type: 'observation',
+        providerId: provider.id,
+        snapshot: observationSnapshot
+      }
+    }
+
+    const forecast = await fetchClosestWeatherForecast(provider, position, now)
+    if (forecast) {
+      return {
+        type: 'forecast',
+        providerId: provider.id,
+        snapshot: forecast.snapshot
+      }
+    }
+
+    return null
+  }
+
+  function getWeatherProvider () {
+    if (!app.weatherApi) return null
+
+    const providerId = options.weather.providerId
+    if (!providerId) {
+      return {
+        id: currentWeatherProviderId(),
+        methods: app.weatherApi
+      }
+    }
+
+    const providers = app.weatherApi.weatherProviders
+    if (providers && typeof providers.get === 'function' && providers.has(providerId)) {
+      return {
+        id: providerId,
+        methods: providers.get(providerId).methods
+      }
+    }
+
+    app.error && app.error(`Weather provider not found: ${providerId}`)
+    return null
+  }
+
+  async function fetchWeatherObservation (provider, position) {
+    if (!provider.methods || typeof provider.methods.getObservations !== 'function') return null
+    try {
+      const observations = await provider.methods.getObservations(position, { maxCount: 1 })
+      return Array.isArray(observations) && observations.length > 0 ? observations[0] : null
+    } catch (error) {
+      app.debug && app.debug(`Weather observations unavailable: ${error.message}`)
+      return null
+    }
+  }
+
+  async function fetchClosestWeatherForecast (provider, position, now) {
+    if (!provider.methods || typeof provider.methods.getForecasts !== 'function') return null
+    try {
+      const forecasts = await provider.methods.getForecasts(position, 'point', { maxCount: 24 })
+      if (!Array.isArray(forecasts) || forecasts.length === 0) return null
+
+      return forecasts
+        .map(forecast => ({
+          snapshot: windSnapshotFromObservation(forecast),
+          distanceMs: dateDistanceMs(forecast.date, now)
+        }))
+        .filter(forecast => forecast.snapshot && Number.isFinite(forecast.distanceMs))
+        .sort((a, b) => a.distanceMs - b.distanceMs)[0] || null
+    } catch (error) {
+      app.debug && app.debug(`Weather forecasts unavailable: ${error.message}`)
+      return null
+    }
   }
 
   function freshWeatherWind () {
     if (!weatherSnapshot) return null
+    if (weatherSnapshot.providerId !== currentWeatherProviderId()) return null
     const ageSeconds = (Date.now() - weatherSnapshot.fetchedAt) / 1000
     return ageSeconds <= options.weather.maxAgeSeconds ? weatherSnapshot : null
+  }
+
+  function currentWeatherProviderId () {
+    if (options.weather.providerId) return options.weather.providerId
+    const defaultProviderId = app.weatherApi && app.weatherApi.defaultProviderId
+    return typeof defaultProviderId === 'string' && defaultProviderId.trim()
+      ? defaultProviderId.trim()
+      : 'default'
   }
 
   function updateRuntime (inputs) {
@@ -318,6 +410,8 @@ module.exports = function createPlugin (app) {
             status: freshWeatherWind() ? 'fresh' : 'stale',
             observedAt: weatherSnapshot.observedAt,
             fetchedAt: new Date(weatherSnapshot.fetchedAt).toISOString(),
+            type: weatherSnapshot.type,
+            providerId: weatherSnapshot.providerId,
             description: weatherSnapshot.description
           }
         : { status: options.weather.enabled ? 'missing' : 'disabled' },
@@ -372,6 +466,9 @@ module.exports = function createPlugin (app) {
 function normalizeOptions (options) {
   const normalized = mergeOptions(DEFAULT_OPTIONS, options || {})
   normalized.initialState.headingTrue = degToRad(normalized.initialState.headingTrueDeg)
+  normalized.weather.providerId = typeof normalized.weather.providerId === 'string'
+    ? normalized.weather.providerId.trim()
+    : ''
   return normalized
 }
 
@@ -395,6 +492,12 @@ function inactiveRuntime () {
 
 function valueStatus (value) {
   return Number.isFinite(value) ? 'present' : 'missing'
+}
+
+function dateDistanceMs (date, now) {
+  const time = new Date(date).getTime()
+  if (!Number.isFinite(time)) return null
+  return Math.abs(time - now)
 }
 
 function mergeOptions (base, override) {
