@@ -10,7 +10,8 @@
     "index.js",
     "lib",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "keywords": [
     "signalk-node-server-plugin",
@@ -38,6 +39,13 @@
   "devDependencies": {},
   "signalk-plugin-enabled-by-default": false,
   "signalk": {
-    "displayName": "Sailboat Simulator"
+    "displayName": "Sailboat Simulator",
+    "recommends": [
+      "@signalk/signalk-autopilot",
+      "signalk-polar-performance-plugin",
+      "signalk-derived-data",
+      "@signalk/open-meteo-provider",
+      "signalk-distance-to-shore"
+    ]
   }
 }

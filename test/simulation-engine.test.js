@@ -235,14 +235,12 @@ test('weather observations are converted to simulator wind snapshots', () => {
     description: 'Overcast',
     wind: {
       speedTrue: 2.45,
-      directionTrue: 4.5,
-      gust: 4.1
+      directionTrue: 4.5
     }
   })
 
   assert.equal(snapshot.speedTrue, 2.45)
   assert.equal(snapshot.directionTrue, 4.5)
-  assert.equal(snapshot.gust, 4.1)
   assert.equal(snapshot.observedAt, '2026-05-31T21:00:00.000Z')
 })
 

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict')
 const createPlugin = require('../index')
 const { degToRad } = require('../lib/angles')
 
-test('does not fall back to self-published wind paths when Weather API is enabled', async () => {
+test('does not fall back to self-published wind paths when wind publishing is enabled', async () => {
   const messages = []
   const app = makeApp({
     selfPaths: windPaths(),
@@ -14,25 +14,11 @@ test('does not fall back to self-published wind paths when Weather API is enable
   })
   const plugin = createPlugin(app)
 
-  plugin.start(makeOptions({ weather: { enabled: true } }))
+  plugin.start(makeOptions())
   await waitForTick()
   plugin.stop()
 
   assert.deepEqual(publishedWindValues(messages), [])
-})
-
-test('uses configured wind input paths when Weather API is disabled', async () => {
-  const messages = []
-  const app = makeApp({ selfPaths: windPaths(), messages })
-  const plugin = createPlugin(app)
-
-  plugin.start(makeOptions({ weather: { enabled: false } }))
-  await waitForTick()
-  plugin.stop()
-
-  const values = publishedWindValues(messages)
-  assert.equal(values.find(value => value.path === 'environment.wind.speedTrue')?.value, 4)
-  assert.equal(values.find(value => value.path === 'environment.wind.directionTrue')?.value, degToRad(180))
 })
 
 test('uses the configured Weather API provider when providerId is set', async () => {
@@ -49,7 +35,7 @@ test('uses the configured Weather API provider when providerId is set', async ()
   })
   const plugin = createPlugin(app)
 
-  plugin.start(makeOptions({ weather: { enabled: true, providerId: 'preferred-weather' } }))
+  plugin.start(makeOptions({ wind: { providerId: 'preferred-weather' } }))
   await waitForTick()
   plugin.stop()
 
@@ -58,13 +44,109 @@ test('uses the configured Weather API provider when providerId is set', async ()
   assert.equal(values.find(value => value.path === 'environment.wind.directionTrue')?.value, degToRad(220))
 })
 
+test('publishes navigation state as a single group', async () => {
+  const messages = []
+  const app = makeApp({
+    observations: [weatherData({ speedTrue: 5, directionTrue: degToRad(170) })],
+    messages
+  })
+  const plugin = createPlugin(app)
+
+  plugin.start(makeOptions({
+    publishing: { navigation: false }
+  }))
+  await waitForTick()
+  plugin.stop()
+
+  assert.deepEqual(
+    publishedValues(messages).filter(value => value.path.startsWith('navigation.')),
+    []
+  )
+  assert.ok(publishedWindValues(messages).length > 0)
+})
+
+test('publishes apparent wind as a speed and angle group', async () => {
+  const messages = []
+  const app = makeApp({
+    observations: [weatherData({ speedTrue: 5, directionTrue: degToRad(170) })],
+    messages
+  })
+  const plugin = createPlugin(app)
+
+  plugin.start(makeOptions({
+    wind: { trueWind: true, apparentWind: false }
+  }))
+  await waitForTick()
+  plugin.stop()
+
+  const values = publishedWindValues(messages)
+  assert.ok(values.some(value => value.path === 'environment.wind.speedTrue'))
+  assert.ok(values.some(value => value.path === 'environment.wind.angleTrueWater'))
+  assert.equal(values.some(value => value.path === 'environment.wind.speedApparent'), false)
+  assert.equal(values.some(value => value.path === 'environment.wind.angleApparent'), false)
+})
+
+test('does not publish wind when true and apparent wind are disabled', async () => {
+  const messages = []
+  const app = makeApp({
+    observations: [weatherData({ speedTrue: 5, directionTrue: degToRad(170) })],
+    messages
+  })
+  const plugin = createPlugin(app)
+
+  plugin.start(makeOptions({
+    wind: { trueWind: false, apparentWind: false }
+  }))
+  await waitForTick()
+  plugin.stop()
+
+  assert.deepEqual(publishedWindValues(messages), [])
+  assert.ok(publishedValues(messages).some(value => value.path.startsWith('navigation.')))
+})
+
+test('does not publish wind gusts', async () => {
+  const messages = []
+  const app = makeApp({
+    observations: [weatherData({ speedTrue: 5, directionTrue: degToRad(170), gust: 9 })],
+    messages
+  })
+  const plugin = createPlugin(app)
+
+  plugin.start(makeOptions())
+  await waitForTick()
+  plugin.stop()
+
+  assert.equal(
+    publishedWindValues(messages).some(value => value.path === 'environment.wind.gust'),
+    false
+  )
+})
+
+test('requests weather observations without maxCount options', async () => {
+  const messages = []
+  let observationOptions = 'not-called'
+  const app = makeApp({ messages })
+  app.weatherApi.getObservations = async (_position, options) => {
+    observationOptions = options
+    return [weatherData({ speedTrue: 5, directionTrue: degToRad(170) })]
+  }
+  const plugin = createPlugin(app)
+
+  plugin.start(makeOptions())
+  await waitForTick()
+  plugin.stop()
+
+  assert.equal(observationOptions, undefined)
+  assert.ok(publishedWindValues(messages).some(value => value.path === 'environment.wind.directionTrue'))
+})
+
 test('reports an unknown configured provider without stopping simulation', async () => {
   const messages = []
   const errors = []
   const app = makeApp({ providers: new Map(), messages, errors })
   const plugin = createPlugin(app)
 
-  plugin.start(makeOptions({ weather: { enabled: true, providerId: 'missing-provider' } }))
+  plugin.start(makeOptions({ wind: { providerId: 'missing-provider' } }))
   await waitForTick()
   plugin.stop()
 
@@ -83,7 +165,7 @@ test('follows the current default Weather API provider when providerId is empty'
 
   plugin.start(makeOptions({
     tickIntervalMs: 20,
-    weather: { enabled: true, retryIntervalSeconds: 0.03, pollIntervalSeconds: 0.03 }
+    wind: { retryIntervalSeconds: 0.03, pollIntervalSeconds: 0.03 }
   }))
   await waitForTick()
   app.weatherApi.defaultProviderId = 'gfs-025'
@@ -95,6 +177,34 @@ test('follows the current default Weather API provider when providerId is empty'
   const values = publishedWindValues(messages)
   assert.equal(values.findLast(value => value.path === 'environment.wind.speedTrue')?.value, 12)
   assert.equal(values.findLast(value => value.path === 'environment.wind.directionTrue')?.value, degToRad(275))
+})
+
+test('uses registered default provider methods instead of aggregate Weather API methods', async () => {
+  const messages = []
+  const providers = new Map([
+    ['open-meteo', {
+      methods: providerMethods({
+        observations: [weatherData({ speedTrue: 5, directionTrue: degToRad(170) })]
+      })
+    }]
+  ])
+  const app = makeApp({
+    defaultProviderId: 'open-meteo',
+    providers,
+    messages
+  })
+  app.weatherApi.getObservations = async () => [
+    weatherData({ speedTrue: 9, directionTrue: degToRad(199) })
+  ]
+  const plugin = createPlugin(app)
+
+  plugin.start(makeOptions())
+  await waitForTick()
+  plugin.stop()
+
+  const values = publishedWindValues(messages)
+  assert.equal(values.find(value => value.path === 'environment.wind.speedTrue')?.value, 5)
+  assert.equal(values.find(value => value.path === 'environment.wind.directionTrue')?.value, degToRad(170))
 })
 
 test('uses the closest forecast when observations are unavailable', async () => {
@@ -110,7 +220,7 @@ test('uses the closest forecast when observations are unavailable', async () => 
   })
   const plugin = createPlugin(app)
 
-  plugin.start(makeOptions({ weather: { enabled: true } }))
+  plugin.start(makeOptions())
   await waitForTick()
   plugin.stop()
 
@@ -126,7 +236,7 @@ test('continues simulation when both observation and forecast providers throw', 
   app.weatherApi.getForecasts = async () => { throw new Error('forecasts unavailable') }
   const plugin = createPlugin(app)
 
-  plugin.start(makeOptions({ weather: { enabled: true } }))
+  plugin.start(makeOptions())
   await waitForTick()
   plugin.stop()
 
@@ -148,7 +258,7 @@ test('retries weather quickly while no weather snapshot is available', async () 
 
   plugin.start(makeOptions({
     tickIntervalMs: 20,
-    weather: { enabled: true, retryIntervalSeconds: 0.03, pollIntervalSeconds: 600 }
+    wind: { retryIntervalSeconds: 0.03, pollIntervalSeconds: 600 }
   }))
   await wait(90)
   plugin.stop()
@@ -159,23 +269,18 @@ test('retries weather quickly while no weather snapshot is available', async () 
 })
 
 function makeOptions (override = {}) {
-  return {
-    enabled: true,
+  const options = {
     tickIntervalMs: override.tickIntervalMs || 60_000,
     maxStepSeconds: 5,
     initialState: { latitude: 43.63278, longitude: 7.14287, headingTrueDeg: 270 },
-    weather: override.weather,
     persistence: { enabled: false },
-    windPublishing: {
-      enabled: true,
-      speedTrue: true,
-      directionTrue: true,
-      angleTrueWater: true,
-      speedApparent: true,
-      angleApparent: true,
-      gust: true
+    wind: override.wind || {
+      trueWind: true,
+      apparentWind: true
     }
   }
+  if (typeof override.publishing !== 'undefined') options.publishing = override.publishing
+  return options
 }
 
 function makeApp ({
@@ -215,7 +320,7 @@ function windPaths () {
   }
 }
 
-function weatherData ({ date = '2026-05-31T21:00:00.000Z', speedTrue, directionTrue, gust = null }) {
+function weatherData ({ date = '2026-05-31T21:00:00.000Z', speedTrue, directionTrue, gust }) {
   return { date, description: 'Weather', wind: { speedTrue, directionTrue, gust } }
 }
 

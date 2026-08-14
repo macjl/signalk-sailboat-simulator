@@ -9,33 +9,32 @@ const { applyPersistedState, createStateStore, stateFromSimulation } = require('
 const PLUGIN_ID = 'sailboat-simulator'
 const PUBLISH_SOURCE = 'signalk-sailboat-simulator'
 
+const INPUT_PATHS = {
+  autopilotModePath: 'steering.autopilot.mode',
+  targetHeadingTruePath: 'steering.autopilot.target.headingTrue',
+  targetHeadingMagneticPath: 'steering.autopilot.target.headingMagnetic',
+  targetHeadingMagneticFallbackPath: 'steering.autopilot.target',
+  targetWindAngleApparentPath: 'steering.autopilot.target.windAngleApparent',
+  magneticVariationPath: 'navigation.magneticVariation',
+  performanceSpeedPath: 'performance.polarSpeed',
+  distanceToShorePath: 'navigation.distanceToShore',
+  shoreBearingTruePath: 'navigation.shore.bearingTrue'
+}
+
 const DEFAULT_OPTIONS = {
-  enabled: true,
   tickIntervalMs: 1000,
   maxStepSeconds: 5,
   initialState: {
     latitude: 43.63278,
     longitude: 7.14287,
-    headingTrueDeg: 270
+    headingTrueDeg: 180
   },
-  inputs: {
-    autopilotModePath: 'steering.autopilot.mode',
-    targetHeadingTruePath: 'steering.autopilot.target.headingTrue',
-    targetHeadingMagneticPath: 'steering.autopilot.target.headingMagnetic',
-    targetHeadingMagneticFallbackPath: 'steering.autopilot.target',
-    targetWindAngleApparentPath: 'steering.autopilot.target.windAngleApparent',
-    magneticVariationPath: 'navigation.magneticVariation',
-    performanceSpeedPath: 'performance.polarSpeed',
-    windSpeedTruePath: 'environment.wind.speedTrue',
-    windDirectionTruePath: 'environment.wind.directionTrue',
-    distanceToShorePath: 'navigation.distanceToShore',
-    shoreBearingTruePath: 'navigation.shore.bearingTrue'
-  },
-  weather: {
-    enabled: true,
+  wind: {
+    trueWind: true,
+    apparentWind: true,
     providerId: '',
     retryIntervalSeconds: 30,
-    pollIntervalSeconds: 600,
+    pollIntervalSeconds: 60,
     maxAgeSeconds: 1800
   },
   fallback: {
@@ -54,21 +53,7 @@ const DEFAULT_OPTIONS = {
   },
   publishing: {
     source: PUBLISH_SOURCE,
-    position: true,
-    headingMagnetic: true,
-    headingTrue: true,
-    courseOverGroundTrue: true,
-    speedOverGround: true,
-    speedThroughWater: true
-  },
-  windPublishing: {
-    enabled: true,
-    speedTrue: true,
-    directionTrue: true,
-    angleTrueWater: true,
-    speedApparent: true,
-    angleApparent: true,
-    gust: true
+    navigation: true
   }
 }
 
@@ -96,7 +81,7 @@ module.exports = function createPlugin (app) {
   return plugin
 
   function start (pluginOptions) {
-    options = normalizeOptions(mergeOptions(DEFAULT_OPTIONS, pluginOptions || {}))
+    options = normalizeOptions(pluginOptions || {})
     lastWeatherFetchAt = 0
     lastStateSaveAt = 0
     weatherSnapshot = null
@@ -106,12 +91,6 @@ module.exports = function createPlugin (app) {
       state = applyPersistedState(state, stateStore.load())
     }
     runtime = inactiveRuntime()
-
-    if (!options.enabled) {
-      runtime.status = 'disabled'
-      setStatus()
-      return
-    }
 
     tick()
     timer = setInterval(() => { tick() }, options.tickIntervalMs)
@@ -156,26 +135,24 @@ module.exports = function createPlugin (app) {
 
   function readInputs () {
     const weatherWind = freshWeatherWind()
-    const inputPathFallbackEnabled = !options.weather.enabled
     return {
-      autopilotMode: readString(options.inputs.autopilotModePath) || readString('steering.autopilot.state'),
-      targetHeadingTrue: readNumber(options.inputs.targetHeadingTruePath),
+      autopilotMode: readString(INPUT_PATHS.autopilotModePath) || readString('steering.autopilot.state'),
+      targetHeadingTrue: readNumber(INPUT_PATHS.targetHeadingTruePath),
       targetHeadingMagnetic: readFirstNumber([
-        options.inputs.targetHeadingMagneticPath,
-        options.inputs.targetHeadingMagneticFallbackPath
+        INPUT_PATHS.targetHeadingMagneticPath,
+        INPUT_PATHS.targetHeadingMagneticFallbackPath
       ]),
-      targetWindAngleApparent: readNumber(options.inputs.targetWindAngleApparentPath),
-      magneticVariation: readNumber(options.inputs.magneticVariationPath),
-      polarSpeed: readNumber(options.inputs.performanceSpeedPath),
+      targetWindAngleApparent: readNumber(INPUT_PATHS.targetWindAngleApparentPath),
+      magneticVariation: readNumber(INPUT_PATHS.magneticVariationPath),
+      polarSpeed: readNumber(INPUT_PATHS.performanceSpeedPath),
       windSpeedTrue: weatherWind && weatherWind.speedTrue != null
         ? weatherWind.speedTrue
-        : inputPathFallbackEnabled ? readNumber(options.inputs.windSpeedTruePath) : null,
+        : null,
       windDirectionTrue: weatherWind && weatherWind.directionTrue != null
         ? weatherWind.directionTrue
-        : inputPathFallbackEnabled ? readNumber(options.inputs.windDirectionTruePath) : null,
-      distanceToShore: readNumber(options.inputs.distanceToShorePath),
-      shoreBearingTrue: readNumber(options.inputs.shoreBearingTruePath),
-      windGust: weatherWind && weatherWind.gust != null ? weatherWind.gust : null,
+        : null,
+      distanceToShore: readNumber(INPUT_PATHS.distanceToShorePath),
+      shoreBearingTrue: readNumber(INPUT_PATHS.shoreBearingTruePath),
       weatherObservedAt: weatherWind ? weatherWind.observedAt : null,
       weatherDescription: weatherWind ? weatherWind.description : ''
     }
@@ -205,7 +182,7 @@ module.exports = function createPlugin (app) {
     if (!state || !app.handleMessage) return
 
     const values = []
-    if (options.publishing.position) {
+    if (publishNavigation()) {
       values.push({
         path: 'navigation.position',
         value: {
@@ -213,21 +190,13 @@ module.exports = function createPlugin (app) {
           longitude: state.position.longitude
         }
       })
-    }
-    if (options.publishing.headingTrue) {
       values.push({ path: 'navigation.headingTrue', value: state.headingTrue })
-    }
-    if (options.publishing.headingMagnetic && Number.isFinite(state.headingMagnetic)) {
-      values.push({ path: 'navigation.headingMagnetic', value: state.headingMagnetic })
-    }
-    if (options.publishing.courseOverGroundTrue) {
       values.push({ path: 'navigation.courseOverGroundTrue', value: state.courseOverGroundTrue })
-    }
-    if (options.publishing.speedOverGround) {
       values.push({ path: 'navigation.speedOverGround', value: state.speedOverGround })
-    }
-    if (options.publishing.speedThroughWater) {
       values.push({ path: 'navigation.speedThroughWater', value: state.speedThroughWater })
+      if (Number.isFinite(state.headingMagnetic)) {
+        values.push({ path: 'navigation.headingMagnetic', value: state.headingMagnetic })
+      }
     }
     values.push(...buildWindValues(inputs))
 
@@ -243,7 +212,7 @@ module.exports = function createPlugin (app) {
   }
 
   function buildWindValues (inputs) {
-    if (!options.windPublishing.enabled) return []
+    if (!publishTrueWind() && !publishApparentWind()) return []
     if (!Number.isFinite(inputs.windSpeedTrue) || !Number.isFinite(inputs.windDirectionTrue)) return []
 
     const windValues = []
@@ -254,33 +223,42 @@ module.exports = function createPlugin (app) {
       boatSpeed: state.speedThroughWater
     })
 
-    if (options.windPublishing.speedTrue) {
+    if (publishTrueWind()) {
       windValues.push({ path: 'environment.wind.speedTrue', value: inputs.windSpeedTrue })
-    }
-    if (options.windPublishing.directionTrue) {
       windValues.push({ path: 'environment.wind.directionTrue', value: inputs.windDirectionTrue })
+      if (Number.isFinite(angleTrueWater)) {
+        windValues.push({ path: 'environment.wind.angleTrueWater', value: angleTrueWater })
+      }
     }
-    if (options.windPublishing.angleTrueWater && Number.isFinite(angleTrueWater)) {
-      windValues.push({ path: 'environment.wind.angleTrueWater', value: angleTrueWater })
-    }
-    if (options.windPublishing.speedApparent && apparent) {
+    if (publishApparentWind() && apparent) {
       windValues.push({ path: 'environment.wind.speedApparent', value: apparent.speed })
-    }
-    if (options.windPublishing.angleApparent && apparent) {
       windValues.push({ path: 'environment.wind.angleApparent', value: apparent.angle })
-    }
-    if (options.windPublishing.gust && Number.isFinite(inputs.windGust)) {
-      windValues.push({ path: 'environment.wind.gust', value: inputs.windGust })
     }
 
     return windValues
   }
 
+  function publishNavigation () {
+    return options.publishing.navigation !== false
+  }
+
+  function publishTrueWind () {
+    return options.wind.trueWind !== false
+  }
+
+  function publishApparentWind () {
+    return options.wind.apparentWind !== false
+  }
+
+  function publishesAnyWind () {
+    return publishTrueWind() || publishApparentWind()
+  }
+
   async function refreshWeather (now) {
-    if (!options.weather.enabled) return
+    if (!publishesAnyWind()) return
     const intervalSeconds = freshWeatherWind()
-      ? options.weather.pollIntervalSeconds
-      : options.weather.retryIntervalSeconds
+      ? options.wind.pollIntervalSeconds
+      : options.wind.retryIntervalSeconds
     if (now - lastWeatherFetchAt < intervalSeconds * 1000) return
     lastWeatherFetchAt = now
 
@@ -325,14 +303,26 @@ module.exports = function createPlugin (app) {
   function getWeatherProvider () {
     if (!app.weatherApi) return null
 
-    const providerId = options.weather.providerId
+    const providerId = options.wind.providerId
     if (!providerId) {
+      const defaultProviderId = currentWeatherProviderId()
+      const registeredProvider = registeredWeatherProvider(defaultProviderId)
+      if (registeredProvider) return registeredProvider
+
       return {
-        id: currentWeatherProviderId(),
+        id: defaultProviderId,
         methods: app.weatherApi
       }
     }
 
+    const configuredProvider = registeredWeatherProvider(providerId)
+    if (configuredProvider) return configuredProvider
+
+    app.error && app.error(`Weather provider not found: ${providerId}`)
+    return null
+  }
+
+  function registeredWeatherProvider (providerId) {
     const providers = app.weatherApi.weatherProviders
     if (providers && typeof providers.get === 'function' && providers.has(providerId)) {
       return {
@@ -340,15 +330,13 @@ module.exports = function createPlugin (app) {
         methods: providers.get(providerId).methods
       }
     }
-
-    app.error && app.error(`Weather provider not found: ${providerId}`)
     return null
   }
 
   async function fetchWeatherObservation (provider, position) {
     if (!provider.methods || typeof provider.methods.getObservations !== 'function') return null
     try {
-      const observations = await provider.methods.getObservations(position, { maxCount: 1 })
+      const observations = await provider.methods.getObservations(position)
       return Array.isArray(observations) && observations.length > 0 ? observations[0] : null
     } catch (error) {
       app.debug && app.debug(`Weather observations unavailable: ${error.message}`)
@@ -379,11 +367,11 @@ module.exports = function createPlugin (app) {
     if (!weatherSnapshot) return null
     if (weatherSnapshot.providerId !== currentWeatherProviderId()) return null
     const ageSeconds = (Date.now() - weatherSnapshot.fetchedAt) / 1000
-    return ageSeconds <= options.weather.maxAgeSeconds ? weatherSnapshot : null
+    return ageSeconds <= options.wind.maxAgeSeconds ? weatherSnapshot : null
   }
 
   function currentWeatherProviderId () {
-    if (options.weather.providerId) return options.weather.providerId
+    if (options.wind.providerId) return options.wind.providerId
     const defaultProviderId = app.weatherApi && app.weatherApi.defaultProviderId
     return typeof defaultProviderId === 'string' && defaultProviderId.trim()
       ? defaultProviderId.trim()
@@ -414,7 +402,7 @@ module.exports = function createPlugin (app) {
             providerId: weatherSnapshot.providerId,
             description: weatherSnapshot.description
           }
-        : { status: options.weather.enabled ? 'missing' : 'disabled' },
+        : { status: publishesAnyWind() ? 'missing' : 'disabled' },
       inputs: {
         autopilotMode: inputs.autopilotMode || null,
         targetHeadingTrue: valueStatus(inputs.targetHeadingTrue),
@@ -425,8 +413,7 @@ module.exports = function createPlugin (app) {
         distanceToShore: valueStatus(inputs.distanceToShore),
         shoreBearingTrue: valueStatus(inputs.shoreBearingTrue),
         windSpeedTrue: valueStatus(inputs.windSpeedTrue),
-        windDirectionTrue: valueStatus(inputs.windDirectionTrue),
-        windGust: valueStatus(inputs.windGust)
+        windDirectionTrue: valueStatus(inputs.windDirectionTrue)
       },
       updatedAt: new Date(state.updatedAt).toISOString()
     }
@@ -448,26 +435,31 @@ module.exports = function createPlugin (app) {
       res.json({
         plugin: PLUGIN_ID,
         runtime,
-        options: {
-          tickIntervalMs: options.tickIntervalMs,
-          inputs: options.inputs,
-          weather: options.weather,
-          dynamics: options.dynamics,
-          grounding: options.grounding,
-          persistence: options.persistence,
-          publishing: options.publishing,
-          windPublishing: options.windPublishing
-        }
+        options: publicOptions()
       })
     })
+  }
+
+  function publicOptions () {
+    return {
+      wind: {
+        trueWind: options.wind.trueWind,
+        apparentWind: options.wind.apparentWind,
+        providerId: options.wind.providerId,
+        pollIntervalSeconds: options.wind.pollIntervalSeconds
+      },
+      grounding: options.grounding,
+      persistence: { enabled: options.persistence.enabled },
+      publishing: { navigation: options.publishing.navigation }
+    }
   }
 }
 
 function normalizeOptions (options) {
   const normalized = mergeOptions(DEFAULT_OPTIONS, options || {})
   normalized.initialState.headingTrue = degToRad(normalized.initialState.headingTrueDeg)
-  normalized.weather.providerId = typeof normalized.weather.providerId === 'string'
-    ? normalized.weather.providerId.trim()
+  normalized.wind.providerId = typeof normalized.wind.providerId === 'string'
+    ? normalized.wind.providerId.trim()
     : ''
   return normalized
 }
