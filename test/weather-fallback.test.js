@@ -65,6 +65,44 @@ test('publishes navigation state as a single group', async () => {
   assert.ok(publishedWindValues(messages).length > 0)
 })
 
+test('publishes magnetic heading when magnetic variation is available', async () => {
+  const messages = []
+  const app = makeApp({
+    selfPaths: {
+      'performance.polarSpeed.value': 1,
+      'navigation.magneticVariation.value': degToRad(3)
+    },
+    observations: [weatherData({ speedTrue: 5, directionTrue: degToRad(170) })],
+    messages
+  })
+  const plugin = createPlugin(app)
+
+  plugin.start(makeOptions())
+  await waitForTick()
+  plugin.stop()
+
+  const values = publishedValues(messages)
+  assert.ok(Math.abs(values.find(value => value.path === 'navigation.headingMagnetic')?.value - degToRad(267)) < 0.000001)
+})
+
+test('does not publish magnetic heading when magnetic variation is missing', async () => {
+  const messages = []
+  const app = makeApp({
+    observations: [weatherData({ speedTrue: 5, directionTrue: degToRad(170) })],
+    messages
+  })
+  const plugin = createPlugin(app)
+
+  plugin.start(makeOptions())
+  await waitForTick()
+  plugin.stop()
+
+  assert.equal(
+    publishedValues(messages).some(value => value.path === 'navigation.headingMagnetic'),
+    false
+  )
+})
+
 test('publishes apparent wind as a speed and angle group', async () => {
   const messages = []
   const app = makeApp({

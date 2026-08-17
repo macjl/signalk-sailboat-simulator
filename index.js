@@ -2,7 +2,7 @@
 
 const { createInitialState, stepSimulation } = require('./lib/simulation-engine')
 const { buildSchema } = require('./lib/plugin-schema')
-const { degToRad, radToDeg } = require('./lib/angles')
+const { degToRad, radToDeg, wrap360Rad } = require('./lib/angles')
 const { apparentWindFromTrue, trueWindFromDirection, windSnapshotFromObservation } = require('./lib/wind')
 const { applyPersistedState, createStateStore, stateFromSimulation } = require('./lib/state-store')
 
@@ -10,11 +10,7 @@ const PLUGIN_ID = 'sailboat-simulator'
 const PUBLISH_SOURCE = 'signalk-sailboat-simulator'
 
 const INPUT_PATHS = {
-  autopilotModePath: 'steering.autopilot.mode',
-  targetHeadingTruePath: 'steering.autopilot.target.headingTrue',
-  targetHeadingMagneticPath: 'steering.autopilot.target.headingMagnetic',
-  targetHeadingMagneticFallbackPath: 'steering.autopilot.target',
-  targetWindAngleApparentPath: 'steering.autopilot.target.windAngleApparent',
+  turnRatePath: 'steering.autopilot.output.turnRate',
   magneticVariationPath: 'navigation.magneticVariation',
   performanceSpeedPath: 'performance.polarSpeed',
   distanceToShorePath: 'navigation.distanceToShore',
@@ -39,9 +35,6 @@ const DEFAULT_OPTIONS = {
   },
   fallback: {
     speedThroughWater: 0
-  },
-  dynamics: {
-    maxTurnRateDegPerSecond: 3
   },
   grounding: {
     enabled: true,
@@ -71,7 +64,7 @@ module.exports = function createPlugin (app) {
   const plugin = {
     id: PLUGIN_ID,
     name: 'Sailboat Simulator',
-    description: 'Simulates a sailing boat position from Signal K heading, weather and polar performance data.',
+    description: 'Simulates a sailing boat position from Signal K autopilot turn-rate output, weather and polar performance data.',
     schema: buildSchema,
     start,
     stop,
@@ -136,13 +129,7 @@ module.exports = function createPlugin (app) {
   function readInputs () {
     const weatherWind = freshWeatherWind()
     return {
-      autopilotMode: readString(INPUT_PATHS.autopilotModePath) || readString('steering.autopilot.state'),
-      targetHeadingTrue: readNumber(INPUT_PATHS.targetHeadingTruePath),
-      targetHeadingMagnetic: readFirstNumber([
-        INPUT_PATHS.targetHeadingMagneticPath,
-        INPUT_PATHS.targetHeadingMagneticFallbackPath
-      ]),
-      targetWindAngleApparent: readNumber(INPUT_PATHS.targetWindAngleApparentPath),
+      turnRate: readNumber(INPUT_PATHS.turnRatePath),
       magneticVariation: readNumber(INPUT_PATHS.magneticVariationPath),
       polarSpeed: readNumber(INPUT_PATHS.performanceSpeedPath),
       windSpeedTrue: weatherWind && weatherWind.speedTrue != null
@@ -164,20 +151,6 @@ module.exports = function createPlugin (app) {
     return Number.isFinite(value) ? value : null
   }
 
-  function readString (path) {
-    if (!path || typeof app.getSelfPath !== 'function') return null
-    const value = app.getSelfPath(`${path}.value`)
-    return typeof value === 'string' ? value : null
-  }
-
-  function readFirstNumber (paths) {
-    for (const path of paths) {
-      const value = readNumber(path)
-      if (Number.isFinite(value)) return value
-    }
-    return null
-  }
-
   function publishState (inputs) {
     if (!state || !app.handleMessage) return
 
@@ -191,12 +164,13 @@ module.exports = function createPlugin (app) {
         }
       })
       values.push({ path: 'navigation.headingTrue', value: state.headingTrue })
+      const headingMagnetic = magneticHeadingFromTrue(state.headingTrue, inputs.magneticVariation)
+      if (Number.isFinite(headingMagnetic)) {
+        values.push({ path: 'navigation.headingMagnetic', value: headingMagnetic })
+      }
       values.push({ path: 'navigation.courseOverGroundTrue', value: state.courseOverGroundTrue })
       values.push({ path: 'navigation.speedOverGround', value: state.speedOverGround })
       values.push({ path: 'navigation.speedThroughWater', value: state.speedThroughWater })
-      if (Number.isFinite(state.headingMagnetic)) {
-        values.push({ path: 'navigation.headingMagnetic', value: state.headingMagnetic })
-      }
     }
     values.push(...buildWindValues(inputs))
 
@@ -379,14 +353,15 @@ module.exports = function createPlugin (app) {
   }
 
   function updateRuntime (inputs) {
+    const headingMagnetic = magneticHeadingFromTrue(state.headingTrue, inputs.magneticVariation)
     runtime = {
       status: state.groundingProtectionActive
         ? 'groundingProtection'
         : Number.isFinite(state.speedThroughWater) && state.speedThroughWater > 0 ? 'sailing' : 'waitingForPerformance',
       position: state.position,
       headingTrueDeg: radToDeg(state.headingTrue),
-      headingMagneticDeg: Number.isFinite(state.headingMagnetic) ? radToDeg(state.headingMagnetic) : null,
-      magneticVariationDeg: Number.isFinite(state.magneticVariation) ? radToDeg(state.magneticVariation) : null,
+      headingMagneticDeg: Number.isFinite(headingMagnetic) ? radToDeg(headingMagnetic) : null,
+      magneticVariationDeg: Number.isFinite(inputs.magneticVariation) ? radToDeg(inputs.magneticVariation) : null,
       courseOverGroundTrueDeg: radToDeg(state.courseOverGroundTrue),
       speedOverGround: state.speedOverGround,
       speedThroughWater: state.speedThroughWater,
@@ -404,10 +379,7 @@ module.exports = function createPlugin (app) {
           }
         : { status: publishesAnyWind() ? 'missing' : 'disabled' },
       inputs: {
-        autopilotMode: inputs.autopilotMode || null,
-        targetHeadingTrue: valueStatus(inputs.targetHeadingTrue),
-        targetHeadingMagnetic: valueStatus(inputs.targetHeadingMagnetic),
-        targetWindAngleApparent: valueStatus(inputs.targetWindAngleApparent),
+        turnRate: valueStatus(inputs.turnRate),
         magneticVariation: valueStatus(inputs.magneticVariation),
         performanceSpeed: valueStatus(inputs.polarSpeed),
         distanceToShore: valueStatus(inputs.distanceToShore),
@@ -484,6 +456,11 @@ function inactiveRuntime () {
 
 function valueStatus (value) {
   return Number.isFinite(value) ? 'present' : 'missing'
+}
+
+function magneticHeadingFromTrue (headingTrue, magneticVariation) {
+  if (!Number.isFinite(headingTrue) || !Number.isFinite(magneticVariation)) return null
+  return wrap360Rad(headingTrue - magneticVariation)
 }
 
 function dateDistanceMs (date, now) {

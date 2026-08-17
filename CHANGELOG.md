@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0] - 2026-08-17
+
+- Follow `steering.autopilot.output.turnRate` from `signalk-autopilot-emulator-v2` directly instead of deriving and rate-limiting turns from autopilot target headings.
+- Remove simulator-side heading target and wind steering logic; the autopilot emulator is now responsible for producing the turn-rate output.
+- Keep simulator steering based on true heading and publish `navigation.headingMagnetic` only when `navigation.magneticVariation` is available.
+
 ## [0.1.0] - 2026-08-14
 
 - Initial public release.

@@ -6,10 +6,7 @@ const { degToRad, radToDeg } = require('../lib/angles')
 const {
   createInitialState,
   deriveWindAngleTrueWater,
-  magneticHeadingFromTrue,
-  stepSimulation,
-  trueHeadingFromApparentWind,
-  trueHeadingFromMagnetic
+  stepSimulation
 } = require('../lib/simulation-engine')
 const { apparentWindFromTrue, windSnapshotFromObservation } = require('../lib/wind')
 const { applyPersistedState, stateFromSimulation } = require('../lib/state-store')
@@ -32,30 +29,41 @@ test('simulation advances east at the polar speed', () => {
   assert.ok(state.position.longitude < 0.0001)
 })
 
-test('target heading overrides the initial heading', () => {
+test('turn rate output rotates the simulated heading directly', () => {
   const options = makeOptions()
   let state = createInitialState(options)
-  state = stepSimulation(state, { targetHeadingTrue: degToRad(180), polarSpeed: 2 }, options, 0)
-  state = stepSimulation(state, { targetHeadingTrue: degToRad(180), polarSpeed: 2 }, options, 1000)
+  state = stepSimulation(state, { turnRate: degToRad(90), polarSpeed: 2 }, options, 0)
+  state = stepSimulation(state, { turnRate: degToRad(90), polarSpeed: 2 }, options, 1000)
 
-  assert.equal(radToDeg(state.headingTrue), 180)
-  assert.equal(radToDeg(state.courseOverGroundTrue), 180)
+  assert.equal(radToDeg(state.headingTrue), 90)
+  assert.equal(radToDeg(state.courseOverGroundTrue), 90)
+  assert.ok(state.position.longitude > 0)
 })
 
-test('target heading is approached at the configured turn rate', () => {
+test('turn rate output is integrated without simulator-side rate limiting', () => {
+  const options = makeOptions({ maxStepSeconds: 10 })
+  let state = createInitialState(options)
+  state = stepSimulation(state, { turnRate: degToRad(180), polarSpeed: 0 }, options, 0)
+  state = stepSimulation(state, { turnRate: degToRad(180), polarSpeed: 0 }, options, 1000)
+  assert.ok(Math.abs(radToDeg(state.headingTrue) - 180) < 0.000001)
+
+  state = stepSimulation(state, { turnRate: degToRad(180), polarSpeed: 0 }, options, 2000)
+  assert.ok(Math.abs(radToDeg(state.headingTrue) - 0) < 0.000001)
+})
+
+test('heading is held when turn rate output is missing', () => {
   const options = makeOptions({
-    maxStepSeconds: 10,
-    dynamics: {
-      maxTurnRateDegPerSecond: 3
+    initialState: {
+      latitude: 0,
+      longitude: 0,
+      headingTrue: degToRad(45)
     }
   })
   let state = createInitialState(options)
-  state = stepSimulation(state, { targetHeadingTrue: degToRad(90), polarSpeed: 0 }, options, 0)
-  state = stepSimulation(state, { targetHeadingTrue: degToRad(90), polarSpeed: 0 }, options, 1000)
-  assert.ok(Math.abs(radToDeg(state.headingTrue) - 3) < 0.000001)
+  state = stepSimulation(state, { polarSpeed: 0 }, options, 0)
+  state = stepSimulation(state, { polarSpeed: 0 }, options, 1000)
 
-  state = stepSimulation(state, { targetHeadingTrue: degToRad(90), polarSpeed: 0 }, options, 11000)
-  assert.ok(Math.abs(radToDeg(state.headingTrue) - 33) < 0.000001)
+  assert.equal(radToDeg(state.headingTrue), 45)
 })
 
 test('grounding protection stops movement inside the minimum shore distance', () => {
@@ -93,13 +101,11 @@ test('grounding protection stops movement when heading toward shore', () => {
   })
   let state = createInitialState(options)
   state = stepSimulation(state, {
-    targetHeadingTrue: degToRad(90),
     polarSpeed: 10,
     distanceToShore: 10,
     shoreBearingTrue: degToRad(90)
   }, options, 0)
   state = stepSimulation(state, {
-    targetHeadingTrue: degToRad(90),
     polarSpeed: 10,
     distanceToShore: 10,
     shoreBearingTrue: degToRad(90)
@@ -115,7 +121,7 @@ test('grounding protection allows movement when heading away from shore', () => 
     initialState: {
       latitude: 0,
       longitude: 0,
-      headingTrue: degToRad(90)
+      headingTrue: degToRad(270)
     },
     grounding: {
       enabled: true,
@@ -124,13 +130,11 @@ test('grounding protection allows movement when heading away from shore', () => 
   })
   let state = createInitialState(options)
   state = stepSimulation(state, {
-    targetHeadingTrue: degToRad(270),
     polarSpeed: 10,
     distanceToShore: 10,
     shoreBearingTrue: degToRad(90)
   }, options, 0)
   state = stepSimulation(state, {
-    targetHeadingTrue: degToRad(270),
     polarSpeed: 10,
     distanceToShore: 10,
     shoreBearingTrue: degToRad(90)
@@ -139,71 +143,6 @@ test('grounding protection allows movement when heading away from shore', () => 
   assert.equal(state.speedOverGround, 10)
   assert.equal(state.groundingProtectionActive, false)
   assert.ok(state.position.longitude < -0.00008)
-})
-
-test('magnetic target heading is converted to true heading with variation', () => {
-  const options = makeOptions()
-  let state = createInitialState(options)
-  state = stepSimulation(state, {
-    targetHeadingMagnetic: degToRad(100),
-    magneticVariation: degToRad(-2),
-    polarSpeed: 2
-  }, options, 0)
-  state = stepSimulation(state, {
-    targetHeadingMagnetic: degToRad(100),
-    magneticVariation: degToRad(-2),
-    polarSpeed: 2
-  }, options, 1000)
-
-  assert.ok(Math.abs(radToDeg(state.headingTrue) - 98) < 0.000001)
-  assert.ok(Math.abs(radToDeg(state.headingMagnetic) - 100) < 0.000001)
-})
-
-test('wind mode derives true heading from target apparent wind angle', () => {
-  const options = makeOptions()
-  let state = createInitialState(options)
-  state = stepSimulation(state, {
-    autopilotMode: 'wind',
-    targetHeadingMagnetic: degToRad(180),
-    targetWindAngleApparent: degToRad(45),
-    windDirectionTrue: degToRad(0),
-    windSpeedTrue: 10,
-    polarSpeed: 0
-  }, options, 0)
-  state = stepSimulation(state, {
-    autopilotMode: 'wind',
-    targetHeadingMagnetic: degToRad(180),
-    targetWindAngleApparent: degToRad(45),
-    windDirectionTrue: degToRad(0),
-    windSpeedTrue: 10,
-    polarSpeed: 0
-  }, options, 1000)
-
-  assert.ok(Math.abs(radToDeg(state.headingTrue) - 315) < 0.000001)
-  assert.ok(Math.abs(radToDeg(state.windAngleTrueWater) - 45) < 0.000001)
-})
-
-test('wind steering accounts for boat speed when targeting apparent wind', () => {
-  const headingTrue = trueHeadingFromApparentWind({
-    targetWindAngleApparent: degToRad(90),
-    windDirectionTrue: degToRad(0),
-    trueWindSpeed: 10,
-    boatSpeed: 5
-  })
-  const trueWindAngle = deriveWindAngleTrueWater(degToRad(0), headingTrue)
-  const apparent = apparentWindFromTrue({
-    trueWindSpeed: 10,
-    trueWindAngle,
-    boatSpeed: 5
-  })
-
-  assert.ok(Math.abs(radToDeg(headingTrue) - 240) < 0.000001)
-  assert.ok(Math.abs(radToDeg(apparent.angle) - 90) < 0.000001)
-})
-
-test('heading conversion helpers wrap circular angles', () => {
-  assert.ok(Math.abs(radToDeg(trueHeadingFromMagnetic(degToRad(359), degToRad(3))) - 2) < 0.000001)
-  assert.ok(Math.abs(radToDeg(magneticHeadingFromTrue(degToRad(2), degToRad(3))) - 359) < 0.000001)
 })
 
 test('true wind angle is relative to heading and negative to port', () => {
@@ -247,8 +186,8 @@ test('weather observations are converted to simulator wind snapshots', () => {
 test('persisted simulator state restores position and heading', () => {
   const options = makeOptions()
   let state = createInitialState(options)
-  state = stepSimulation(state, { targetHeadingTrue: degToRad(90), polarSpeed: 10 }, options, 0)
-  state = stepSimulation(state, { targetHeadingTrue: degToRad(90), polarSpeed: 10 }, options, 1000)
+  state = stepSimulation(state, { turnRate: degToRad(90), polarSpeed: 10 }, options, 0)
+  state = stepSimulation(state, { turnRate: degToRad(90), polarSpeed: 10 }, options, 1000)
 
   const persisted = stateFromSimulation(state)
   const restored = applyPersistedState(createInitialState(options), persisted)
@@ -279,9 +218,6 @@ function makeOptions (override = {}) {
     },
     fallback: {
       speedThroughWater: 0
-    },
-    dynamics: {
-      maxTurnRateDegPerSecond: 360
     }
   }, override)
 }
