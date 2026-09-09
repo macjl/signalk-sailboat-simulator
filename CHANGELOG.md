@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.3.1] - 2026-09-09
+
+- Report polar loading and validation failures through the Signal K plugin error channel with their detailed cause.
+
 ## [0.3.0] - 2026-09-09
 
 - Calculate simulated boat speed directly from the active `signalk-polar-management` polar resource via `polar-math`.

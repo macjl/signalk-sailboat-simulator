@@ -110,6 +110,32 @@ test('calculates boat speed from the active polar resource', async () => {
   assert.equal(values.find(value => value.path === 'navigation.speedOverGround')?.value, 2)
 })
 
+test('reports an invalid active polar through the plugin error channel', async () => {
+  const messages = []
+  const pluginErrors = []
+  const pluginStatuses = []
+  const app = makeApp({
+    selfPaths: {
+      'polars.activePolar.value': { href: '/resources/polars/invalid-polar' }
+    },
+    resources: {
+      'invalid-polar': {}
+    },
+    observations: [weatherData({ speedTrue: 5, directionTrue: degToRad(90) })],
+    messages,
+    pluginErrors,
+    pluginStatuses
+  })
+  const plugin = createPlugin(app)
+
+  plugin.start(makeOptions())
+  await waitForTick()
+  plugin.stop()
+
+  assert.match(pluginErrors.at(-1), /^Polar error: .+/)
+  assert.equal(pluginStatuses.includes('polarError'), false)
+})
+
 test('does not publish magnetic heading when magnetic variation is missing', async () => {
   const messages = []
   const app = makeApp({
@@ -364,12 +390,15 @@ function makeApp ({
   defaultProviderId,
   resources = {},
   messages,
-  errors = []
+  errors = [],
+  pluginErrors = [],
+  pluginStatuses = []
 }) {
   return {
     getSelfPath: path => selfPaths[path],
     handleMessage: (_pluginId, message) => { messages.push(message) },
-    setPluginStatus: () => {},
+    setPluginStatus: message => { pluginStatuses.push(message) },
+    setPluginError: message => { pluginErrors.push(message) },
     error: message => { errors.push(message) },
     resourcesApi: {
       getResource: async (type, id) => {

@@ -479,13 +479,26 @@ module.exports = function createPlugin (app) {
   }
 
   function setStatus () {
-    if (!app.setPluginStatus) return
-    if (runtime.status === 'sailing') {
+    if (runtime.status === 'polarError') {
+      setError(`Polar error: ${runtime.polar && runtime.polar.error ? runtime.polar.error : 'unable to calculate boat speed'}`)
+    } else if (runtime.status === 'error') {
+      setError(`Simulator error: ${runtime.error || 'unexpected runtime failure'}`)
+    } else if (!app.setPluginStatus) {
+      return
+    } else if (runtime.status === 'sailing') {
       app.setPluginStatus(`Sailing at ${runtime.speedOverGround.toFixed(2)} m/s, heading ${runtime.headingTrueDeg.toFixed(1)} deg`)
     } else if (runtime.status === 'groundingProtection') {
       app.setPluginStatus(`Stopped: distance to shore ${runtime.distanceToShore.toFixed(1)} m`)
     } else {
       app.setPluginStatus(runtime.status)
+    }
+  }
+
+  function setError (message) {
+    if (typeof app.setPluginError === 'function') {
+      app.setPluginError(message)
+    } else if (typeof app.setPluginStatus === 'function') {
+      app.setPluginStatus(message)
     }
   }
 

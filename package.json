@@ -1,6 +1,6 @@
 {
   "name": "signalk-sailboat-simulator",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Signal K plugin that simulates a sailing boat from autopilot turn-rate output, weather and an active polar resource.",
   "main": "index.js",
   "scripts": {
