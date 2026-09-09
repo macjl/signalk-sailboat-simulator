@@ -1,7 +1,7 @@
 {
   "name": "signalk-sailboat-simulator",
-  "version": "0.2.0",
-  "description": "Signal K plugin that simulates a sailing boat from autopilot turn-rate output, weather and polar performance data.",
+  "version": "0.3.0",
+  "description": "Signal K plugin that simulates a sailing boat from autopilot turn-rate output, weather and an active polar resource.",
   "main": "index.js",
   "scripts": {
     "test": "node --test"
@@ -33,16 +33,17 @@
     "url": "https://github.com/macjl/signalk-sailboat-simulator/issues"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
-  "dependencies": {},
-  "devDependencies": {},
+  "dependencies": {
+    "polar-math": "^1.0.0"
+  },
   "signalk-plugin-enabled-by-default": false,
   "signalk": {
     "displayName": "Sailboat Simulator",
     "recommends": [
       "signalk-autopilot-emulator-v2",
-      "signalk-polar-performance-plugin",
+      "signalk-polar-management",
       "signalk-derived-data",
       "@signalk/open-meteo-provider",
       "signalk-distance-to-shore"

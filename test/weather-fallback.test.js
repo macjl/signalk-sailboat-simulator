@@ -69,7 +69,6 @@ test('publishes magnetic heading when magnetic variation is available', async ()
   const messages = []
   const app = makeApp({
     selfPaths: {
-      'performance.polarSpeed.value': 1,
       'navigation.magneticVariation.value': degToRad(3)
     },
     observations: [weatherData({ speedTrue: 5, directionTrue: degToRad(170) })],
@@ -83,6 +82,32 @@ test('publishes magnetic heading when magnetic variation is available', async ()
 
   const values = publishedValues(messages)
   assert.ok(Math.abs(values.find(value => value.path === 'navigation.headingMagnetic')?.value - degToRad(267)) < 0.000001)
+})
+
+test('calculates boat speed from the active polar resource', async () => {
+  const messages = []
+  const app = makeApp({
+    selfPaths: {
+      'polars.activePolar.value': { href: '/resources/polars/test-polar' },
+      'polars.performanceFactor.value': 0.5
+    },
+    resources: {
+      'test-polar': samplePolarTable()
+    },
+    observations: [weatherData({ speedTrue: 5, directionTrue: degToRad(90) })],
+    messages
+  })
+  const plugin = createPlugin(app)
+
+  plugin.start(makeOptions({
+    initialState: { latitude: 43.63278, longitude: 7.14287, headingTrueDeg: 0 }
+  }))
+  await waitForTick()
+  plugin.stop()
+
+  const values = publishedValues(messages)
+  assert.equal(values.find(value => value.path === 'navigation.speedThroughWater')?.value, 2)
+  assert.equal(values.find(value => value.path === 'navigation.speedOverGround')?.value, 2)
 })
 
 test('does not publish magnetic heading when magnetic variation is missing', async () => {
@@ -124,22 +149,32 @@ test('publishes apparent wind as a speed and angle group', async () => {
   assert.equal(values.some(value => value.path === 'environment.wind.angleApparent'), false)
 })
 
-test('does not publish wind when true and apparent wind are disabled', async () => {
+test('uses weather for polar speed without publishing wind when both outputs are disabled', async () => {
   const messages = []
   const app = makeApp({
-    observations: [weatherData({ speedTrue: 5, directionTrue: degToRad(170) })],
+    selfPaths: {
+      'polars.activePolar.value': { href: '/resources/polars/test-polar' }
+    },
+    resources: {
+      'test-polar': samplePolarTable()
+    },
+    observations: [weatherData({ speedTrue: 5, directionTrue: degToRad(90) })],
     messages
   })
   const plugin = createPlugin(app)
 
   plugin.start(makeOptions({
+    initialState: { latitude: 43.63278, longitude: 7.14287, headingTrueDeg: 0 },
     wind: { trueWind: false, apparentWind: false }
   }))
   await waitForTick()
   plugin.stop()
 
   assert.deepEqual(publishedWindValues(messages), [])
-  assert.ok(publishedValues(messages).some(value => value.path.startsWith('navigation.')))
+  assert.equal(
+    publishedValues(messages).find(value => value.path === 'navigation.speedThroughWater')?.value,
+    4
+  )
 })
 
 test('does not publish wind gusts', async () => {
@@ -310,7 +345,7 @@ function makeOptions (override = {}) {
   const options = {
     tickIntervalMs: override.tickIntervalMs || 60_000,
     maxStepSeconds: 5,
-    initialState: { latitude: 43.63278, longitude: 7.14287, headingTrueDeg: 270 },
+    initialState: override.initialState || { latitude: 43.63278, longitude: 7.14287, headingTrueDeg: 270 },
     persistence: { enabled: false },
     wind: override.wind || {
       trueWind: true,
@@ -322,11 +357,12 @@ function makeOptions (override = {}) {
 }
 
 function makeApp ({
-  selfPaths = { 'performance.polarSpeed.value': 1 },
+  selfPaths = {},
   observations = [],
   forecasts = [],
   providers,
   defaultProviderId,
+  resources = {},
   messages,
   errors = []
 }) {
@@ -335,6 +371,12 @@ function makeApp ({
     handleMessage: (_pluginId, message) => { messages.push(message) },
     setPluginStatus: () => {},
     error: message => { errors.push(message) },
+    resourcesApi: {
+      getResource: async (type, id) => {
+        if (type !== 'polars' || !resources[id]) throw new Error(`Resource not found: ${type}/${id}`)
+        return resources[id]
+      }
+    },
     weatherApi: {
       defaultProviderId,
       weatherProviders: providers,
@@ -353,13 +395,35 @@ function providerMethods ({ observations = [], forecasts = [] }) {
 function windPaths () {
   return {
     'environment.wind.speedTrue.value': 4,
-    'environment.wind.directionTrue.value': degToRad(180),
-    'performance.polarSpeed.value': 1
+    'environment.wind.directionTrue.value': degToRad(180)
   }
 }
 
 function weatherData ({ date = '2026-05-31T21:00:00.000Z', speedTrue, directionTrue, gust }) {
   return { date, description: 'Weather', wind: { speedTrue, directionTrue, gust } }
+}
+
+function samplePolarTable () {
+  return {
+    kind: 'polarTable',
+    schemaVersion: '1.0.0',
+    name: 'Test Polar',
+    units: {
+      tws: 'm/s',
+      twa: 'rad',
+      boatSpeed: 'm/s'
+    },
+    symmetry: {
+      portStarboardSymmetric: true
+    },
+    axes: {
+      tws: [5],
+      twa: [degToRad(45), degToRad(90), degToRad(135)]
+    },
+    values: {
+      boatSpeedMatrix: [[3, 4, 3]]
+    }
+  }
 }
 
 function publishedValues (messages) {

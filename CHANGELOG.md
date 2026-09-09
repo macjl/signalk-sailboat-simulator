@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0] - 2026-09-09
+
+- Calculate simulated boat speed directly from the active `signalk-polar-management` polar resource via `polar-math`.
+- Replace the `signalk-polar-performance-plugin` recommendation with `signalk-polar-management`.
+- Stop requiring `performance.polarSpeed` as an input path.
+- Keep the active polar cached for up to 60 seconds so edits made under the same resource id are picked up automatically.
+
 ## [0.2.0] - 2026-08-17
 
 - Follow `steering.autopilot.output.turnRate` from `signalk-autopilot-emulator-v2` directly instead of deriving and rate-limiting turns from autopilot target headings.

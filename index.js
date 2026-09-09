@@ -1,5 +1,6 @@
 'use strict'
 
+const { Polar } = require('polar-math')
 const { createInitialState, stepSimulation } = require('./lib/simulation-engine')
 const { buildSchema } = require('./lib/plugin-schema')
 const { degToRad, radToDeg, wrap360Rad } = require('./lib/angles')
@@ -8,11 +9,13 @@ const { applyPersistedState, createStateStore, stateFromSimulation } = require('
 
 const PLUGIN_ID = 'sailboat-simulator'
 const PUBLISH_SOURCE = 'signalk-sailboat-simulator'
+const POLAR_CACHE_MAX_AGE_MS = 60_000
 
 const INPUT_PATHS = {
   turnRatePath: 'steering.autopilot.output.turnRate',
   magneticVariationPath: 'navigation.magneticVariation',
-  performanceSpeedPath: 'performance.polarSpeed',
+  activePolarPath: 'polars.activePolar',
+  performanceFactorPath: 'polars.performanceFactor',
   distanceToShorePath: 'navigation.distanceToShore',
   shoreBearingTruePath: 'navigation.shore.bearingTrue'
 }
@@ -60,11 +63,12 @@ module.exports = function createPlugin (app) {
   let lastStateSaveAt = 0
   let weatherSnapshot = null
   let stateStore = null
+  let polarCache = null
 
   const plugin = {
     id: PLUGIN_ID,
     name: 'Sailboat Simulator',
-    description: 'Simulates a sailing boat position from Signal K autopilot turn-rate output, weather and polar performance data.',
+    description: 'Simulates a sailing boat position from Signal K autopilot turn-rate output, weather and an active polar resource.',
     schema: buildSchema,
     start,
     stop,
@@ -78,6 +82,7 @@ module.exports = function createPlugin (app) {
     lastWeatherFetchAt = 0
     lastStateSaveAt = 0
     weatherSnapshot = null
+    polarCache = null
     stateStore = createStateStore(app, PLUGIN_ID)
     state = createInitialState(options)
     if (options.persistence.enabled) {
@@ -103,7 +108,7 @@ module.exports = function createPlugin (app) {
     const now = Date.now()
     try {
       await refreshWeather(now)
-      const inputs = readInputs()
+      const inputs = await readInputs()
       state = stepSimulation(state, inputs, options, now)
       publishState(inputs)
       persistState(now)
@@ -126,12 +131,13 @@ module.exports = function createPlugin (app) {
     if (stateStore.save(persisted)) lastStateSaveAt = now
   }
 
-  function readInputs () {
+  async function readInputs () {
     const weatherWind = freshWeatherWind()
-    return {
+    const inputs = {
       turnRate: readNumber(INPUT_PATHS.turnRatePath),
       magneticVariation: readNumber(INPUT_PATHS.magneticVariationPath),
-      polarSpeed: readNumber(INPUT_PATHS.performanceSpeedPath),
+      activePolar: readValue(INPUT_PATHS.activePolarPath),
+      performanceFactor: readNumber(INPUT_PATHS.performanceFactorPath),
       windSpeedTrue: weatherWind && weatherWind.speedTrue != null
         ? weatherWind.speedTrue
         : null,
@@ -143,12 +149,87 @@ module.exports = function createPlugin (app) {
       weatherObservedAt: weatherWind ? weatherWind.observedAt : null,
       weatherDescription: weatherWind ? weatherWind.description : ''
     }
+    const polarSpeed = await calculatePolarSpeed(inputs)
+    inputs.polarSpeed = polarSpeed.speed
+    inputs.polar = polarSpeed.status
+    return inputs
+  }
+
+  function readValue (path) {
+    if (!path || typeof app.getSelfPath !== 'function') return null
+    return app.getSelfPath(`${path}.value`)
   }
 
   function readNumber (path) {
-    if (!path || typeof app.getSelfPath !== 'function') return null
-    const value = app.getSelfPath(`${path}.value`)
+    const value = readValue(path)
     return Number.isFinite(value) ? value : null
+  }
+
+  async function calculatePolarSpeed (inputs) {
+    const activePolar = activePolarFromValue(inputs.activePolar)
+    const performanceFactor = Number.isFinite(inputs.performanceFactor)
+      ? inputs.performanceFactor
+      : 1
+    const status = {
+      status: 'missingActivePolar',
+      id: activePolar.id,
+      href: activePolar.href,
+      performanceFactor,
+      speedState: null,
+      speed: null,
+      windAngleTrueWaterDeg: null
+    }
+
+    if (!activePolar.id) {
+      return { speed: null, status }
+    }
+
+    if (!Number.isFinite(inputs.windSpeedTrue) || !Number.isFinite(inputs.windDirectionTrue)) {
+      status.status = 'waitingForWind'
+      return { speed: null, status }
+    }
+
+    const windAngleTrueWater = trueWindFromDirection(inputs.windDirectionTrue, state.headingTrue)
+    status.windAngleTrueWaterDeg = Number.isFinite(windAngleTrueWater)
+      ? radToDeg(windAngleTrueWater)
+      : null
+
+    try {
+      const polar = await loadActivePolar(activePolar.id)
+      const result = polar.speedAt({
+        tws: inputs.windSpeedTrue,
+        twa: windAngleTrueWater,
+        performanceFactor
+      })
+      status.speedState = result.state
+      if (Number.isFinite(result.value)) {
+        status.status = 'ready'
+        status.speed = result.value
+        return { speed: result.value, status }
+      }
+      status.status = 'noSpeedForConditions'
+      return { speed: null, status }
+    } catch (error) {
+      status.status = 'error'
+      status.error = error.message
+      return { speed: null, status }
+    }
+  }
+
+  async function loadActivePolar (id) {
+    const now = Date.now()
+    if (polarCache && polarCache.id === id && now - polarCache.loadedAt < POLAR_CACHE_MAX_AGE_MS) {
+      return polarCache.polar
+    }
+
+    if (!app.resourcesApi || typeof app.resourcesApi.getResource !== 'function') {
+      throw new Error('Signal K resources API is not available')
+    }
+
+    const table = await app.resourcesApi.getResource('polars', id)
+    const polar = Polar.fromTable(table)
+    polarCache = { id, polar, loadedAt: now }
+    return polar
   }
 
   function publishState (inputs) {
@@ -224,12 +305,7 @@ module.exports = function createPlugin (app) {
     return options.wind.apparentWind !== false
   }
 
-  function publishesAnyWind () {
-    return publishTrueWind() || publishApparentWind()
-  }
-
   async function refreshWeather (now) {
-    if (!publishesAnyWind()) return
     const intervalSeconds = freshWeatherWind()
       ? options.wind.pollIntervalSeconds
       : options.wind.retryIntervalSeconds
@@ -355,9 +431,7 @@ module.exports = function createPlugin (app) {
   function updateRuntime (inputs) {
     const headingMagnetic = magneticHeadingFromTrue(state.headingTrue, inputs.magneticVariation)
     runtime = {
-      status: state.groundingProtectionActive
-        ? 'groundingProtection'
-        : Number.isFinite(state.speedThroughWater) && state.speedThroughWater > 0 ? 'sailing' : 'waitingForPerformance',
+      status: runtimeStatus(inputs),
       position: state.position,
       headingTrueDeg: radToDeg(state.headingTrue),
       headingMagneticDeg: Number.isFinite(headingMagnetic) ? radToDeg(headingMagnetic) : null,
@@ -377,11 +451,14 @@ module.exports = function createPlugin (app) {
             providerId: weatherSnapshot.providerId,
             description: weatherSnapshot.description
           }
-        : { status: publishesAnyWind() ? 'missing' : 'disabled' },
+        : { status: 'missing' },
+      polar: inputs.polar || { status: 'missingActivePolar' },
       inputs: {
         turnRate: valueStatus(inputs.turnRate),
         magneticVariation: valueStatus(inputs.magneticVariation),
-        performanceSpeed: valueStatus(inputs.polarSpeed),
+        activePolar: activePolarFromValue(inputs.activePolar).id ? 'present' : 'missing',
+        performanceFactor: valueStatus(inputs.performanceFactor),
+        polarSpeed: valueStatus(inputs.polarSpeed),
         distanceToShore: valueStatus(inputs.distanceToShore),
         shoreBearingTrue: valueStatus(inputs.shoreBearingTrue),
         windSpeedTrue: valueStatus(inputs.windSpeedTrue),
@@ -389,6 +466,16 @@ module.exports = function createPlugin (app) {
       },
       updatedAt: new Date(state.updatedAt).toISOString()
     }
+  }
+
+  function runtimeStatus (inputs) {
+    if (state.groundingProtectionActive) return 'groundingProtection'
+    if (Number.isFinite(state.speedThroughWater) && state.speedThroughWater > 0) return 'sailing'
+    if (!inputs.polar || inputs.polar.status === 'missingActivePolar') return 'waitingForPolar'
+    if (inputs.polar.status === 'waitingForWind') return 'waitingForWind'
+    if (inputs.polar.status === 'error') return 'polarError'
+    if (inputs.polar.status === 'noSpeedForConditions') return 'waitingForPolarSpeed'
+    return 'waitingForPolarSpeed'
   }
 
   function setStatus () {
@@ -456,6 +543,36 @@ function inactiveRuntime () {
 
 function valueStatus (value) {
   return Number.isFinite(value) ? 'present' : 'missing'
+}
+
+function activePolarFromValue (value) {
+  if (typeof value === 'string' && value.trim()) {
+    const hrefId = polarIdFromHref(value)
+    return { id: hrefId || value.trim(), href: hrefId ? value : null }
+  }
+
+  if (!value || typeof value !== 'object') {
+    return { id: null, href: null }
+  }
+
+  const href = typeof value.href === 'string' ? value.href : null
+  return {
+    id: typeof value.id === 'string' && value.id.trim()
+      ? value.id.trim()
+      : polarIdFromHref(href),
+    href
+  }
+}
+
+function polarIdFromHref (href) {
+  if (typeof href !== 'string') return null
+  const match = href.match(/\/resources\/polars\/([^/?#]+)/)
+  if (!match) return null
+  try {
+    return decodeURIComponent(match[1])
+  } catch (_) {
+    return match[1]
+  }
 }
 
 function magneticHeadingFromTrue (headingTrue, magneticVariation) {
