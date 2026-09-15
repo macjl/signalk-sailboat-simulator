@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.0] - 2026-09-15
+
+- Update `polar-math` to 1.1.1 so sparse polar rows are supported and beat-angle handling includes its latest fixes.
+- Disable polar extrapolation so the simulator follows explicitly entered speeds below the calculated beat angle instead of enforcing performance-oriented sailing limits.
+
 ## [0.3.1] - 2026-09-09
 
 - Report polar loading and validation failures through the Signal K plugin error channel with their detailed cause.

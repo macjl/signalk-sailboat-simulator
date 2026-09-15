@@ -96,6 +96,8 @@ The simulator publishes virtual wind for the rest of the Signal K stack. The pub
 
 The simulator uses the same true wind values with the active polar resource to calculate boat speed. The active polar must use the canonical `polar-format` structure provided by `signalk-polar-management`.
 
+Polar extrapolation is disabled: below the calculated beat angle, the simulator follows the speeds present in the entered polar curve. If the polar has no usable speed for the requested conditions, the boat stops instead of inventing a performance value.
+
 The simulator uses the calculated polar speed as boat speed, integrates heading from `steering.autopilot.output.turnRate`, and integrates position along that simulated heading. Current, leeway, route following and manoeuvre rules are intentionally left as separate steps.
 
 ## Configuration

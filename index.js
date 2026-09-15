@@ -199,7 +199,8 @@ module.exports = function createPlugin (app) {
       const result = polar.speedAt({
         tws: inputs.windSpeedTrue,
         twa: windAngleTrueWater,
-        performanceFactor
+        performanceFactor,
+        extrapolate: false
       })
       status.speedState = result.state
       if (Number.isFinite(result.value)) {

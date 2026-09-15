@@ -110,6 +110,31 @@ test('calculates boat speed from the active polar resource', async () => {
   assert.equal(values.find(value => value.path === 'navigation.speedOverGround')?.value, 2)
 })
 
+test('uses the entered polar curve below the calculated beat angle', async () => {
+  const messages = []
+  const app = makeApp({
+    selfPaths: {
+      'polars.activePolar.value': { href: '/resources/polars/below-beat-polar' }
+    },
+    resources: {
+      'below-beat-polar': belowBeatPolarTable()
+    },
+    observations: [weatherData({ speedTrue: 5, directionTrue: degToRad(40) })],
+    messages
+  })
+  const plugin = createPlugin(app)
+
+  plugin.start(makeOptions({
+    initialState: { latitude: 43.63278, longitude: 7.14287, headingTrueDeg: 0 }
+  }))
+  await waitForTick()
+  plugin.stop()
+
+  const values = publishedValues(messages)
+  const speed = values.find(value => value.path === 'navigation.speedThroughWater')?.value
+  assert.ok(Math.abs(speed - 2.0333333333333337) < 0.000001)
+})
+
 test('reports an invalid active polar through the plugin error channel', async () => {
   const messages = []
   const pluginErrors = []
@@ -451,6 +476,20 @@ function samplePolarTable () {
     },
     values: {
       boatSpeedMatrix: [[3, 4, 3]]
+    }
+  }
+}
+
+function belowBeatPolarTable () {
+  return {
+    ...samplePolarTable(),
+    name: 'Below Beat Polar',
+    axes: {
+      tws: [5],
+      twa: [degToRad(30), degToRad(50), degToRad(90), degToRad(135)]
+    },
+    values: {
+      boatSpeedMatrix: [[0.5, 3, 4, 3]]
     }
   }
 }
